@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Azure Sponsorship Monitor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      margin: 0;
+      background: #f0f2f5;
+      color: #1a1a2e;
+    }
+
+    header {
+      background: #0078d4;
+      color: #fff;
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    header h1 { margin: 0; font-size: 1.4rem; font-weight: 600; }
+
+    main { padding: 1.5rem 2rem; max-width: 1200px; margin: 0 auto; }
+
+    /* ── filter form ── */
+    form.filters {
+      background: #fff;
+      border-radius: 8px;
+      padding: 1rem 1.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: flex-end;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      margin-bottom: 1.5rem;
+    }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: .8rem; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: .04em; }
+    .field input, .field select {
+      border: 1px solid #c8c8c8;
+      border-radius: 4px;
+      padding: .4rem .6rem;
+      font-size: .95rem;
+      min-width: 140px;
+    }
+    .field input:focus, .field select:focus { outline: 2px solid #0078d4; border-color: transparent; }
+    button[type=submit] {
+      background: #0078d4;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: .5rem 1.25rem;
+      font-size: .95rem;
+      cursor: pointer;
+      align-self: flex-end;
+    }
+    button[type=submit]:hover { background: #005fa3; }
+
+    /* ── alert ── */
+    .alert {
+      background: #fde8e8;
+      border-left: 4px solid #d32f2f;
+      border-radius: 4px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      font-size: .95rem;
+    }
+
+    /* ── summary cards ── */
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    }
+    .card .label { font-size: .75rem; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .25rem; }
+    .card .value { font-size: 1.5rem; font-weight: 700; color: #0078d4; }
+    .card .sub   { font-size: .82rem; color: #555; margin-top: .2rem; word-break: break-word; }
+
+    /* ── table ── */
+    .table-wrap {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      overflow-x: auto;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: .88rem;
+    }
+    thead tr { background: #0078d4; color: #fff; }
+    thead th { padding: .65rem 1rem; text-align: left; font-weight: 600; white-space: nowrap; }
+    tbody tr:nth-child(even) { background: #f8f9fb; }
+    tbody td { padding: .55rem 1rem; border-bottom: 1px solid #eee; }
+    tbody td.num { text-align: right; }
+
+    .empty {
+      text-align: center;
+      padding: 3rem;
+      color: #888;
+      font-size: 1rem;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+  </svg>
+  <h1>Azure Sponsorship Monitor</h1>
+</header>
+
+<main>
+  <!-- Filters -->
+  <form class="filters" method="GET" action="/">
+    <div class="field">
+      <label for="start">Start date</label>
+      <input type="date" id="start" name="start" value="{{ start }}" required />
+    </div>
+    <div class="field">
+      <label for="end">End date</label>
+      <input type="date" id="end" name="end" value="{{ end }}" required />
+    </div>
+    <div class="field">
+      <label for="granularity">Granularity</label>
+      <select id="granularity" name="granularity">
+        <option value="Daily"  {% if granularity == "Daily"  %}selected{% endif %}>Daily</option>
+        <option value="Hourly" {% if granularity == "Hourly" %}selected{% endif %}>Hourly</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="show_details">Instance details</label>
+      <select id="show_details" name="show_details">
+        <option value="false" {% if not show_details %}selected{% endif %}>No</option>
+        <option value="true"  {% if show_details     %}selected{% endif %}>Yes</option>
+      </select>
+    </div>
+    <button type="submit">Refresh</button>
+  </form>
+
+  {% if error %}
+  <div class="alert">⚠️ {{ error }}</div>
+  {% endif %}
+
+  <!-- Summary cards (total per meter) -->
+  {% if total_quantity_by_meter %}
+  <div class="summary-grid">
+    {% for meter, qty in total_quantity_by_meter.items() %}
+    <div class="card">
+      <div class="label">Total usage</div>
+      <div class="value">{{ "%.4f"|format(qty) }}</div>
+      <div class="sub">{{ meter }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- Detail table -->
+  <div class="table-wrap">
+    {% if records %}
+    <table>
+      <thead>
+        <tr>
+          <th>Usage start</th>
+          <th>Usage end</th>
+          <th>Meter category</th>
+          <th>Meter sub-category</th>
+          <th>Meter name</th>
+          <th>Unit</th>
+          <th>Quantity</th>
+          <th>Subscription ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rec in records %}
+        <tr>
+          <td>{{ rec.usage_start }}</td>
+          <td>{{ rec.usage_end }}</td>
+          <td>{{ rec.meter_category }}</td>
+          <td>{{ rec.meter_sub_category }}</td>
+          <td>{{ rec.meter_name }}</td>
+          <td>{{ rec.unit }}</td>
+          <td class="num">{{ "%.6f"|format(rec.quantity|float) }}</td>
+          <td>{{ rec.subscription_id }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% elif not error %}
+    <p class="empty">No usage records found for the selected period.</p>
+    {% endif %}
+  </div>
+</main>
+
+</body>
+</html>
