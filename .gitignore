@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment / secrets – never commit real credentials
+.env
+
+# Sample data exports – may contain subscription-specific info
+data/
+
+# Private planning docs – kept local only
+docs/azure-deployment-plan.md
+
+# Private AI coding agent instructions – kept local only
+AGENTS.md
+.github/copilot-instructions.md
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Pytest cache
+.pytest_cache/
+.coverage
+htmlcov/
