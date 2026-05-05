@@ -139,6 +139,12 @@ def test_index_renders_records(app_client):
     assert b"Compute Hours" in resp.data
     assert b"Virtual Machines" in resp.data
     assert b"2.500000" in resp.data
+    assert b"Configure columns" in resp.data
+    assert b"Export CSV" in resp.data
+    assert b"Export JSON" in resp.data
+    assert b"azureSponsorshipMonitor.visibleColumns" in resp.data
+    assert b"Chart type" in resp.data
+    assert b"<option value=\"pie\">Pie</option>" in resp.data
 
 
 def test_index_aggregates_totals(app_client):
@@ -306,6 +312,19 @@ def test_index_shows_total_cost(app_client):
     assert b"Estimated total cost" in resp.data
 
 
+def test_index_shows_average_daily_cost(app_client):
+    """Average daily cost should divide the total by the selected day span."""
+    client, app_module = app_client
+    meters = [_make_meter(meter_id="meter-abc", meter_rates={"0": 0.10})]
+    records = [_make_record(meter_id="meter-abc", quantity=100.0)]
+    fake = _fake_client_returning(records, rate_card_meters=meters)
+    with patch.object(app_module, "_get_client", return_value=fake):
+        resp = client.get("/?start=2024-01-01&end=2024-01-06&refresh=true")
+    assert resp.status_code == 200
+    assert b"Average daily cost" in resp.data
+    assert b"2.00" in resp.data
+
+
 def test_index_shows_rate_card_warning(app_client):
     """When rate card fetch fails, a warning should appear."""
     client, app_module = app_client
@@ -315,3 +334,193 @@ def test_index_shows_rate_card_warning(app_client):
         resp = client.get("/?refresh=true")
     assert resp.status_code == 200
     assert b"RateCard data is unavailable" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# Tests – BRSDT decoding
+# ---------------------------------------------------------------------------
+
+def test_decode_brsdt_via_meter_name(app_client):
+    """BRSDT rows with meter_name should be decoded."""
+    _, app_module = app_client
+    rec = {"meter_name": "Daily_BRSDT_20260101_0000", "name": "rec-1",
+           "quantity": 1.0, "meter_category": "", "meter_id": "m1"}
+    result = app_module._decode_brsdt(rec, 2.50)
+    assert result["meter_name"] == "GPT-5.4 \u00b7 input"
+    assert result["meter_category"] == "Azure OpenAI"
+
+
+def test_decode_brsdt_via_name_field(app_client):
+    """BRSDT rows with the prefix in 'name' (not meter_name) should be decoded."""
+    _, app_module = app_client
+    rec = {"meter_name": "", "name": "Daily_BRSDT_20260101_0000",
+           "quantity": 0.5, "meter_category": "", "meter_id": "m2"}
+    result = app_module._decode_brsdt(rec, 0.5 * 15.0)
+    assert result["meter_name"] == "GPT-5.4 \u00b7 output"
+    assert result["meter_category"] == "Azure OpenAI"
+
+
+def test_decode_brsdt_other_rate(app_client):
+    """$0.04 rate rows should be tagged as 'Sponsored (other)'."""
+    _, app_module = app_client
+    rec = {"meter_name": "", "name": "Daily_BRSDT_20260101_0000",
+           "quantity": 10.0, "meter_category": "", "meter_id": "m3"}
+    result = app_module._decode_brsdt(rec, 10.0 * 0.04)
+    assert result["meter_category"] == "Sponsored (other)"
+
+
+def test_decode_brsdt_tolerance_matching(app_client):
+    """Rates within 5 % tolerance should still match the correct model."""
+    _, app_module = app_client
+    rec = {"meter_name": "", "name": "Daily_BRSDT_20260101_0000",
+           "quantity": 1.0, "meter_category": "", "meter_id": "m4"}
+    # 2.45 is within 5% of 2.50
+    result = app_module._decode_brsdt(rec, 2.45)
+    assert result["meter_name"] == "GPT-5.4 \u00b7 input"
+
+
+def test_decode_brsdt_unmatched_rate(app_client):
+    """Unknown rates should produce a descriptive label and be non-AI."""
+    _, app_module = app_client
+    rec = {"meter_name": "", "name": "Daily_BRSDT_20260101_0000",
+           "quantity": 1.0, "meter_category": "", "meter_id": "m5"}
+    result = app_module._decode_brsdt(rec, 99.99)
+    assert "BRSDT" in result["meter_name"]
+    assert result["meter_category"] == "Sponsored (other)"
+    assert result.get("is_brsdt") is not True
+
+
+def test_decode_brsdt_zero_cost(app_client):
+    """Zero-cost BRSDT rows should be labelled as unrated non-AI."""
+    _, app_module = app_client
+    rec = {"meter_name": "", "name": "Daily_BRSDT_20260101_0000",
+           "quantity": 0.5, "meter_category": "", "meter_id": "m6"}
+    result = app_module._decode_brsdt(rec, 0.0)
+    assert result["meter_name"] == "BRSDT (unrated)"
+    assert result["meter_category"] == "Sponsored (other)"
+    assert result.get("is_brsdt") is not True
+
+
+def test_decode_brsdt_non_brsdt_unchanged(app_client):
+    """Non-BRSDT records should pass through unchanged."""
+    _, app_module = app_client
+    rec = {"meter_name": "Compute Hours", "name": "rec-1",
+           "quantity": 5.0, "meter_category": "Virtual Machines", "meter_id": "x"}
+    result = app_module._decode_brsdt(rec, 1.0)
+    assert result["meter_name"] == "Compute Hours"
+    assert result["meter_category"] == "Virtual Machines"
+
+
+def test_decode_brsdt_preserves_real_names(app_client):
+    """Rows with BRSDT name field but real meter_name should be left untouched."""
+    _, app_module = app_client
+    rec = {"meter_name": "B DTU", "name": "Daily_BRSDT_20260101_0000",
+           "quantity": 10.0, "meter_category": "SQL Database", "meter_id": "sql1"}
+    result = app_module._decode_brsdt(rec, 5.0)
+    assert result["meter_name"] == "B DTU"
+    assert result["meter_category"] == "SQL Database"
+    assert result.get("is_brsdt") is not True
+
+    rec2 = {"meter_name": "GitHub Copilot User", "name": "Daily_BRSDT_20260101_0000",
+            "quantity": 1.0, "meter_category": "GitHub", "meter_id": "gh1"}
+    result2 = app_module._decode_brsdt(rec2, 19.0)
+    assert result2["meter_name"] == "GitHub Copilot User"
+    assert result2["meter_category"] == "GitHub"
+    assert result2.get("is_brsdt") is not True
+
+
+def test_index_decodes_brsdt_rows(app_client):
+    """BRSDT rows on the dashboard should be decoded with proper labels."""
+    client, app_module = app_client
+    meters = [
+        _make_meter(meter_id="brsdt-m1", meter_rates={"0": 2.50}),
+    ]
+    records = [
+        _make_record(
+            meter_id="brsdt-m1",
+            meter_name="",
+            meter_category="",
+            quantity=1.0,
+            name="Daily_BRSDT_20260101_0000",
+        ),
+    ]
+    fake = _fake_client_returning(records, rate_card_meters=meters)
+    with patch.object(app_module, "_get_client", return_value=fake):
+        resp = client.get("/?refresh=true")
+    assert resp.status_code == 200
+    assert b"GPT-5.4" in resp.data
+    assert b"Azure OpenAI" in resp.data
+
+
+def test_decode_brsdt_tags_record(app_client):
+    """_decode_brsdt should only set is_brsdt=True for matched AI rates."""
+    _, app_module = app_client
+    # AI rate → is_brsdt = True
+    rec = {"meter_name": "", "name": "Daily_BRSDT_20260101_0000",
+           "quantity": 1.0, "meter_category": "", "meter_id": "m1"}
+    app_module._decode_brsdt(rec, 2.50)
+    assert rec["is_brsdt"] is True
+    assert rec["brsdt_implied_rate"] == 2.50
+
+    # Non-AI rate → is_brsdt not set
+    rec2 = {"meter_name": "", "name": "Daily_BRSDT_20260101_0000",
+            "quantity": 1.0, "meter_category": "", "meter_id": "m2"}
+    app_module._decode_brsdt(rec2, 19.00)
+    assert rec2.get("is_brsdt") is not True
+
+
+def test_index_service_view_collapses_brsdt(app_client):
+    """Service view should collapse only AI BRSDT rows; real-named rows kept."""
+    client, app_module = app_client
+    meters = [
+        _make_meter(meter_id="brsdt-ai", meter_rates={"0": 2.50}),
+        _make_meter(meter_id="brsdt-ai2", meter_rates={"0": 15.00}),
+        _make_meter(meter_id="brsdt-other", meter_rates={"0": 0.16}),
+        _make_meter(meter_id="regular-m1", meter_rates={"0": 0.10}),
+        _make_meter(meter_id="sql-m1", meter_rates={"0": 0.50}),
+    ]
+    records = [
+        _make_record(meter_id="brsdt-ai", meter_name="", meter_category="",
+                     quantity=1.0, name="Daily_BRSDT_20260101_0000"),
+        _make_record(meter_id="brsdt-ai2", meter_name="", meter_category="",
+                     quantity=0.5, name="Daily_BRSDT_20260101_0000"),
+        _make_record(meter_id="brsdt-other", meter_name="", meter_category="",
+                     quantity=1.0, name="Daily_BRSDT_20260101_0000"),
+        _make_record(meter_id="regular-m1", meter_name="Compute Hours",
+                     meter_category="Virtual Machines", quantity=10.0),
+        # Row with real name but BRSDT name field — should keep its real name
+        _make_record(meter_id="sql-m1", meter_name="B DTU",
+                     meter_category="SQL Database", quantity=5.0,
+                     name="Daily_BRSDT_20260101_0000"),
+    ]
+    fake = _fake_client_returning(records, rate_card_meters=meters)
+    with patch.object(app_module, "_get_client", return_value=fake):
+        resp = client.get("/?refresh=true")
+    assert resp.status_code == 200
+    # Service view should show "Azure OpenAI" collapsed card for AI only
+    assert b"All AI model usage combined" in resp.data
+    # Non-AI BRSDT should show as "Sponsored (other)" individually
+    assert b"BRSDT $0.16/unit" in resp.data
+    # View toggle should be present
+    assert b"viewToggle" in resp.data
+    # Regular meters should also appear
+    assert b"Compute Hours" in resp.data
+    # Real-named row with BRSDT name field should keep its real name
+    assert b"B DTU" in resp.data
+    assert b"SQL Database" in resp.data
+
+
+def test_index_has_rate_ref_table(app_client):
+    """AI Detail view should include the rate mapping reference table."""
+    client, app_module = app_client
+    meters = [_make_meter(meter_id="brsdt-m1", meter_rates={"0": 2.50})]
+    records = [
+        _make_record(meter_id="brsdt-m1", meter_name="", meter_category="",
+                     quantity=1.0, name="Daily_BRSDT_20260101_0000"),
+    ]
+    fake = _fake_client_returning(records, rate_card_meters=meters)
+    with patch.object(app_module, "_get_client", return_value=fake):
+        resp = client.get("/?refresh=true")
+    assert resp.status_code == 200
+    assert b"Rate Mapping Reference" in resp.data
+    assert b"GPT-5.4-pro" in resp.data

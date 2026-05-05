@@ -135,7 +135,7 @@ pip install pytest              # if not already installed
 pytest tests/ -v
 ```
 
-All 18 tests should pass. They cover:
+All 31 tests should pass. They cover:
 - `/health` endpoint
 - Dashboard rendering with and without records
 - Per-meter total aggregation
@@ -147,6 +147,9 @@ All 18 tests should pass. They cover:
 - Cost calculation: flat rate, included quantity, tiered rates, zero quantity, empty rate info
 - Grand total cost display
 - RateCard unavailable warning
+- BRSDT decoding: meter name and name-field detection, AI rate matching with tolerance, unmatched/zero-cost rates, non-AI passthrough, real-name preservation
+- Service-view BRSDT collapse (AI rows grouped, non-AI kept separate)
+- Rate reference table rendering
 
 ---
 

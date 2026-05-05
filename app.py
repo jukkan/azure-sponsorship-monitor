@@ -118,6 +118,139 @@ def calculate_cost(quantity: float, rate_info: dict) -> float:
     return cost
 
 
+# Maps unit rate ($/unit, rounded to 2 dp) to a human-readable AI meter label.
+# Rates confirmed from live billing data on MS-AZR-0036P (April 2026).
+_BRSDT_RATE_LABELS: dict[float, str] = {
+    0.10: "Sora 2 · video ($/sec)",
+    0.17: "GPT-5.2 · cached input",   # legacy rate, pre-March 2026
+    0.25: "GPT-5.4 · cached input",
+    0.50: "GPT-5.4-pp · cached input",
+    1.75: "GPT-5.2 · input",
+    2.50: "GPT-5.4 · input",
+    5.00: "GPT-5.4-pp · input",
+    14.00: "GPT-5.2 · output",
+    15.00: "GPT-5.4 · output",
+    30.00: "GPT-5.4-pro · input / GPT-5.4-pp · output",
+    180.00: "GPT-5.4-pro · output",
+}
+_BRSDT_OTHER_RATES: frozenset[float] = frozenset({0.04})
+_BRSDT_PREFIX = "Daily_BRSDT_"
+_BRSDT_AI_CATEGORY = "Azure OpenAI"
+_BRSDT_OTHER_CATEGORY = "Sponsored (other)"
+_BRSDT_RATE_TOLERANCE = 0.05  # 5 % relative tolerance for rate matching
+
+
+def _match_brsdt_rate(implied_rate: float) -> tuple[bool, str | None]:
+    """
+    Match an implied rate against the BRSDT lookup table.
+
+    Returns ``(matched, label)``:
+    * ``(True, "<model label>")`` – AI model identified
+    * ``(True, None)``           – non-AI sponsored service ($0.04 etc.)
+    * ``(False, None)``          – no match found
+    """
+    # Non-AI flat-fee rates (small absolute tolerance)
+    for other_rate in _BRSDT_OTHER_RATES:
+        if abs(implied_rate - other_rate) < 0.005:
+            return True, None
+
+    # AI model rates (relative tolerance for tiered / FP edge-cases)
+    best_label: str | None = None
+    best_distance = float("inf")
+    for rate, label in _BRSDT_RATE_LABELS.items():
+        rel_distance = abs(implied_rate - rate) / rate
+        if rel_distance < _BRSDT_RATE_TOLERANCE and rel_distance < best_distance:
+            best_distance = rel_distance
+            best_label = label
+
+    if best_label is not None:
+        return True, best_label
+    return False, None
+
+
+def _is_brsdt_row(rec: dict) -> bool:
+    """Check if a record is a Daily_BRSDT billing row that needs decoding.
+
+    A row only needs BRSDT decoding when it has the BRSDT identifier
+    **and** the API did not already supply a real meter name/category.
+    Many rows share the ``Daily_BRSDT_*`` name but already carry proper
+    values like ``meter_name='B DTU'``, ``meter_category='SQL Database'``
+    — those must be left untouched.
+    """
+    has_brsdt_id = (
+        rec.get("meter_name", "").startswith(_BRSDT_PREFIX)
+        or rec.get("name", "").startswith(_BRSDT_PREFIX)
+    )
+    if not has_brsdt_id:
+        return False
+    # If the API already provided a real meter name (not the BRSDT prefix
+    # itself), the row does not need decoding.
+    real_name = rec.get("meter_name", "")
+    if real_name and not real_name.startswith(_BRSDT_PREFIX):
+        return False
+    return True
+
+
+def _decode_brsdt(rec: dict, cost: float) -> dict:
+    """
+    For Daily_BRSDT_* rows, replace meter_name and meter_category with
+    human-readable labels derived from the implied unit rate.
+
+    Only rows matching a known AI model rate get ``is_brsdt = True``
+    (collapsed into "Azure OpenAI" in the service view).  All other
+    BRSDT rows are non-AI services that happen to share the same
+    Commerce API meter — they get ``is_brsdt = False`` and category
+    "Sponsored (other)".
+    """
+    if not _is_brsdt_row(rec):
+        return rec
+
+    qty = float(rec.get("quantity") or 0)
+    if qty == 0:
+        # Zero quantity — can't compute rate, treat as non-AI
+        rec["meter_category"] = _BRSDT_OTHER_CATEGORY
+        return rec
+
+    if cost == 0:
+        # RateCard missing or $0 billing period — can't determine model
+        rec["meter_category"] = _BRSDT_OTHER_CATEGORY
+        rec["meter_name"] = "BRSDT (unrated)"
+        return rec
+
+    implied_rate = round(cost / qty, 2)
+    rec["brsdt_implied_rate"] = implied_rate
+    matched, label = _match_brsdt_rate(implied_rate)
+
+    if matched and label is not None:
+        # Confirmed AI model usage
+        rec["is_brsdt"] = True
+        rec["meter_name"] = label
+        rec["meter_category"] = _BRSDT_AI_CATEGORY
+    elif matched:
+        # Known non-AI rate ($0.04 etc.)
+        rec["meter_category"] = _BRSDT_OTHER_CATEGORY
+    else:
+        # Unknown rate — non-AI service, label with rate for investigation
+        log.info(
+            "BRSDT row with unmatched rate $%.2f/unit (meter_id=%s)",
+            implied_rate,
+            rec.get("meter_id", ""),
+        )
+        rec["meter_name"] = f"BRSDT ${implied_rate:.2f}/unit"
+        rec["meter_category"] = _BRSDT_OTHER_CATEGORY
+
+    return rec
+
+
+def _format_cost(cost: float | None) -> str:
+    if not cost:
+        return "0.00"
+    return f"{cost:.2f}"
+
+
+app.jinja_env.filters["format_cost"] = _format_cost
+
+
 def fetch_usage(
     start_time: datetime,
     end_time: datetime,
@@ -193,8 +326,17 @@ def index():
     total_cost_by_meter: dict[str, float] = {}
     unit_by_meter: dict[str, str] = {}
     grand_total_cost = 0.0
+    average_daily_cost = 0.0
     chart_labels_list: list[str] = []
     chart_daily: dict[str, dict[str, float]] = {}
+    svc_chart_daily: dict[str, dict[str, float]] = {}
+    cache_efficiency: dict[str, float] = {}
+    svc_cost: dict[str, float] = {}
+    svc_quantity: dict[str, float] = {}
+    svc_unit: dict[str, str] = {}
+    brsdt_detail_keys: set[str] = set()
+    brsdt_unmatched_rates: set[float] = set()
+    has_brsdt = False
     currency = os.environ.get("AZURE_CURRENCY", "USD")
     fetched = request.args.get("refresh") == "true"
 
@@ -212,6 +354,8 @@ def index():
         if end_dt >= today:
             raise ValueError("End date must be before today (usage data is delayed 24–48 h).")
 
+        selected_period_days = (end_dt - start_dt).days
+
         if fetched:
             records = fetch_usage(start_dt, end_dt, granularity, show_details)
 
@@ -224,25 +368,80 @@ def index():
                 )
 
             for rec in records:
-                key = rec["meter_name"] or rec["name"] or "Unknown"
                 qty = float(rec["quantity"] or 0)
-                total_quantity_by_meter[key] = (
-                    total_quantity_by_meter.get(key, 0.0) + qty
-                )
-                if key not in unit_by_meter:
-                    unit_by_meter[key] = rec.get("unit", "")
                 meter_id = rec.get("meter_id", "")
                 rate_info = rate_map.get(meter_id)
                 cost = calculate_cost(qty, rate_info) if rate_info else 0.0
                 rec["cost"] = cost
-                total_cost_by_meter[key] = total_cost_by_meter.get(key, 0.0) + cost
+                rec = _decode_brsdt(rec, cost)
+                if not rec.get("meter_category"):
+                    rec["meter_category"] = "Unknown"
+
+                is_brsdt = rec.get("is_brsdt", False)
+                detail_key = rec["meter_name"] or rec["name"] or "Unknown"
+
+                # Full-detail totals (all meters with decoded names)
+                total_quantity_by_meter[detail_key] = (
+                    total_quantity_by_meter.get(detail_key, 0.0) + qty
+                )
+                if detail_key not in unit_by_meter:
+                    unit_by_meter[detail_key] = rec.get("unit", "")
+                total_cost_by_meter[detail_key] = (
+                    total_cost_by_meter.get(detail_key, 0.0) + cost
+                )
                 grand_total_cost += cost
-                # chart: accumulate daily cost per meter
+
+                # Service-level totals (BRSDT collapsed to "Azure OpenAI")
+                svc_key = _BRSDT_AI_CATEGORY if is_brsdt else detail_key
+                svc_cost[svc_key] = svc_cost.get(svc_key, 0.0) + cost
+                if not is_brsdt:
+                    svc_quantity[svc_key] = (
+                        svc_quantity.get(svc_key, 0.0) + qty
+                    )
+                    if svc_key not in svc_unit:
+                        svc_unit[svc_key] = rec.get("unit", "")
+
+                if is_brsdt:
+                    has_brsdt = True
+                    brsdt_detail_keys.add(detail_key)
+                    if detail_key.startswith("BRSDT $"):
+                        brsdt_unmatched_rates.add(
+                            rec.get("brsdt_implied_rate", 0.0)
+                        )
+
+                # Chart: daily cost per meter (detail level)
                 _d = str(rec["usage_start"])[:10]
-                if key not in chart_daily:
-                    chart_daily[key] = {}
-                chart_daily[key][_d] = chart_daily[key].get(_d, 0.0) + cost
+                if detail_key not in chart_daily:
+                    chart_daily[detail_key] = {}
+                chart_daily[detail_key][_d] = (
+                    chart_daily[detail_key].get(_d, 0.0) + cost
+                )
+                # Service-level chart
+                if svc_key not in svc_chart_daily:
+                    svc_chart_daily[svc_key] = {}
+                svc_chart_daily[svc_key][_d] = (
+                    svc_chart_daily[svc_key].get(_d, 0.0) + cost
+                )
             chart_labels_list = sorted({str(r["usage_start"])[:10] for r in records})
+            if selected_period_days > 0:
+                average_daily_cost = grand_total_cost / selected_period_days
+
+            # Cache efficiency: cached_input_tokens / (cached + regular input)
+            _cache_input_suffix = "· cached input"
+            _regular_input_suffix = "· input"
+            cache_hits: dict[str, float] = {}
+            regular_inputs: dict[str, float] = {}
+            for key, qty in total_quantity_by_meter.items():
+                if key.endswith(_cache_input_suffix):
+                    model = key.replace(_cache_input_suffix, "").strip()
+                    cache_hits[model] = cache_hits.get(model, 0.0) + qty
+                elif key.endswith(_regular_input_suffix):
+                    model = key.replace(_regular_input_suffix, "").strip()
+                    regular_inputs[model] = regular_inputs.get(model, 0.0) + qty
+            for model in cache_hits:
+                total_in = cache_hits[model] + regular_inputs.get(model, 0.0)
+                if total_in > 0:
+                    cache_efficiency[model] = cache_hits[model] / total_in
 
     except ValueError as exc:
         error = str(exc)
@@ -269,6 +468,43 @@ def index():
         for m in chart_meter_order
     }
 
+    # Service-level summaries (BRSDT collapsed to "Azure OpenAI")
+    svc_sorted_meters = sorted(
+        svc_cost.keys(),
+        key=lambda m: svc_cost.get(m, 0.0),
+        reverse=True,
+    )
+    svc_sorted_cost_dict = {m: svc_cost.get(m, 0.0) for m in svc_sorted_meters}
+    svc_sorted_quantity_dict = {
+        m: svc_quantity.get(m, 0.0) for m in svc_sorted_meters
+    }
+    svc_meter_order = [
+        m for m in svc_sorted_meters if svc_cost.get(m, 0.0) > 0
+    ]
+    svc_chart_series = {
+        m: [svc_chart_daily.get(m, {}).get(d, 0.0) for d in chart_labels_list]
+        for m in svc_meter_order
+    }
+
+    # AI-only summaries (decoded BRSDT meters)
+    ai_sorted_meters = [
+        m for m in sorted_meters if m in brsdt_detail_keys
+    ]
+    ai_quantity = {m: total_quantity_by_meter[m] for m in ai_sorted_meters}
+    ai_cost = {
+        m: total_cost_by_meter.get(m, 0.0) for m in ai_sorted_meters
+    }
+    ai_unit = {m: unit_by_meter.get(m, "") for m in ai_sorted_meters}
+    ai_meter_order = [
+        m for m in ai_sorted_meters
+        if total_cost_by_meter.get(m, 0.0) > 0
+    ]
+    ai_chart_series = {
+        m: [chart_daily.get(m, {}).get(d, 0.0) for d in chart_labels_list]
+        for m in ai_meter_order
+    }
+    ai_total_cost = sum(ai_cost.values())
+
     return render_template(
         "index.html",
         records=records,
@@ -276,6 +512,7 @@ def index():
         total_cost_by_meter=sorted_cost,
         unit_by_meter=unit_by_meter,
         grand_total_cost=grand_total_cost,
+        average_daily_cost=average_daily_cost,
         currency=currency,
         rate_card_warning=rate_card_warning,
         fetched=fetched,
@@ -287,6 +524,22 @@ def index():
         chart_labels=chart_labels_list,
         chart_series_data=chart_series_data,
         chart_meter_order=chart_meter_order,
+        cache_efficiency=cache_efficiency,
+        has_brsdt=has_brsdt,
+        svc_quantity=svc_sorted_quantity_dict,
+        svc_cost=svc_sorted_cost_dict,
+        svc_unit=svc_unit,
+        svc_chart_series=svc_chart_series,
+        svc_meter_order=svc_meter_order,
+        ai_quantity=ai_quantity,
+        ai_cost=ai_cost,
+        ai_unit=ai_unit,
+        ai_chart_series=ai_chart_series,
+        ai_meter_order=ai_meter_order,
+        ai_total_cost=ai_total_cost,
+        brsdt_rate_labels=_BRSDT_RATE_LABELS,
+        brsdt_other_rates=_BRSDT_OTHER_RATES,
+        brsdt_unmatched_rates=sorted(brsdt_unmatched_rates),
     )
 
 

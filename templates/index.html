@@ -79,6 +79,12 @@
       margin-bottom: 1.5rem;
       box-shadow: 0 2px 8px rgba(0,120,212,.25);
     }
+    .grand-total-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem 2rem;
+      align-items: end;
+    }
     .grand-total .label { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; opacity: .85; }
     .grand-total .amount { font-size: 2.4rem; font-weight: 800; margin: .25rem 0; }
     .grand-total .note { font-size: .82rem; opacity: .7; }
@@ -135,6 +141,75 @@
       letter-spacing: .04em;
     }
     .table-filters .tf { display: flex; flex-direction: column; gap: 3px; }
+
+    .table-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: .75rem;
+      margin-bottom: .75rem;
+      align-items: center;
+    }
+    .table-toolbar .meta {
+      font-size: .82rem;
+      color: #555;
+    }
+    .table-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem;
+    }
+    .secondary-btn {
+      background: #fff;
+      color: #0078d4;
+      border: 1px solid #b7cbe2;
+      border-radius: 4px;
+      padding: .45rem .85rem;
+      font-size: .88rem;
+      cursor: pointer;
+    }
+    .secondary-btn:hover { background: #f0f6ff; }
+    .column-panel {
+      display: none;
+      background: #fff;
+      border: 1px solid #d7e3f0;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.08);
+      padding: 1rem 1.1rem;
+      margin-bottom: .75rem;
+    }
+    .column-panel.open { display: block; }
+    .column-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: .75rem;
+      margin-bottom: .85rem;
+    }
+    .column-panel-title {
+      font-size: .92rem;
+      font-weight: 600;
+      color: #1a1a2e;
+    }
+    .column-panel-note {
+      font-size: .8rem;
+      color: #666;
+    }
+    .column-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: .65rem 1rem;
+    }
+    .column-option {
+      display: flex;
+      gap: .5rem;
+      align-items: center;
+      font-size: .88rem;
+      color: #1a1a2e;
+    }
+    .column-option input { margin: 0; }
+
+    .is-hidden-column { display: none; }
 
     /* ── table ── */
     .table-wrap {
@@ -224,6 +299,51 @@
       position: relative;
       height: 280px;
     }
+    .chart-canvas-wrap.pie-mode {
+      height: 340px;
+    }
+
+    /* ── view toggle ── */
+    .view-toggle {
+      display: flex;
+      gap: 0;
+      margin-bottom: 1.5rem;
+    }
+    .toggle-btn {
+      background: #fff;
+      color: #555;
+      border: 1px solid #c8c8c8;
+      padding: .55rem 1.25rem;
+      font-size: .92rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .toggle-btn:first-child { border-radius: 6px 0 0 6px; }
+    .toggle-btn:last-child  { border-radius: 0 6px 6px 0; border-left: none; }
+    .toggle-btn.active {
+      background: #0078d4;
+      color: #fff;
+      border-color: #0078d4;
+    }
+    .toggle-btn:not(.active):hover { background: #f0f6ff; color: #0078d4; }
+
+    /* ── rate ref table ── */
+    .rate-ref-table { width: auto; font-size: .85rem; border-collapse: collapse; }
+    .rate-ref-table th { text-align: left; padding: .4rem .8rem; font-weight: 600; color: #1a1a2e; background: #f0f2f5; }
+    .rate-ref-table td { padding: .35rem .8rem; border-bottom: 1px solid #eee; }
+    .rate-ref-table td.num { text-align: right; font-family: "Cascadia Code", monospace; }
+    .rate-ref-note { font-size: .82rem; color: #888; margin-top: .5rem; }
+    .unmatched-badge {
+      display: inline-block;
+      background: #fff3cd;
+      color: #856404;
+      font-size: .78rem;
+      font-weight: 600;
+      padding: .15rem .5rem;
+      border-radius: 3px;
+      margin-left: .3rem;
+    }
   </style>
 </head>
 <body>
@@ -282,32 +402,146 @@
   <!-- Grand total cost -->
   {% if grand_total_cost > 0 %}
   <div class="grand-total">
-    <div class="label">Estimated total cost</div>
-    <div class="amount">${{ "%.2f"|format(grand_total_cost) }}</div>
+    <div class="grand-total-grid">
+      <div>
+        <div class="label">Estimated total cost</div>
+        <div class="amount">${{ "%.2f"|format(grand_total_cost) }}</div>
+      </div>
+      <div>
+        <div class="label">Average daily cost</div>
+        <div class="amount">${{ "%.2f"|format(average_daily_cost) }}</div>
+      </div>
+    </div>
     <div class="note">Based on RateCard rates for {{ start }} &ndash; {{ end }}</div>
   </div>
   {% endif %}
 
-  <!-- Summary cards (total per meter) -->
-  {% if total_quantity_by_meter %}
-  {% set meter_items = total_quantity_by_meter.items()|list %}
-  <div class="summary-grid" id="meterCards">
-    {% for meter, qty in meter_items %}
+  <!-- View toggle -->
+  {% if has_brsdt and fetched and not error %}
+  <div class="view-toggle" id="viewToggle">
+    <button class="toggle-btn active" data-view="services" onclick="switchView('services')">Services</button>
+    <button class="toggle-btn" data-view="ai" onclick="switchView('ai')">AI Detail</button>
+  </div>
+  {% endif %}
+
+  <!-- ═══ Services view ═══ -->
+  <div id="viewServices">
+  {% if svc_cost %}
+  {% set svc_items = svc_cost.items()|list %}
+  <div class="summary-grid" id="svcCards">
+    {% for meter, cost_val in svc_items %}
     <div class="card meter-card" {% if loop.index > 10 %}style="display:none;"{% endif %}>
       <div class="sub" style="font-weight:600;color:#1a1a2e;margin-bottom:.35rem;">{{ meter }}</div>
-      {% if total_cost_by_meter.get(meter, 0) > 0 %}
-      <div class="value">${{ "%.2f"|format(total_cost_by_meter[meter]) }}</div>
+      {% if cost_val > 0 %}
+      <div class="value">${{ "%.2f"|format(cost_val) }}</div>
       {% endif %}
-      <div class="sub" style="color:#888;">{{ "%.4f"|format(qty) }} {{ unit_by_meter.get(meter, "") }}</div>
+      {% if svc_quantity.get(meter, 0) > 0 %}
+      <div class="sub" style="color:#888;">{{ "%.4f"|format(svc_quantity[meter]) }} {{ svc_unit.get(meter, "") }}</div>
+      {% elif meter == "Azure OpenAI" %}
+      <div class="sub" style="color:#888;">All AI model usage combined</div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
-  {% if meter_items|length > 10 %}
-  <button class="show-more-btn" id="showMoreBtn" onclick="toggleCards()">
-    Show all {{ meter_items|length }} meters &#9662;
+  {% if svc_items|length > 10 %}
+  <button class="show-more-btn" id="showMoreBtnSvc" onclick="toggleCards('svcCards', this)">
+    Show all {{ svc_items|length }} meters &#9662;
   </button>
   {% endif %}
   {% endif %}
+  </div>
+
+  <!-- ═══ AI Detail view ═══ -->
+  <div id="viewAI" style="display:none;">
+  {% if ai_cost %}
+  {% set ai_items = ai_cost.items()|list %}
+  <div class="summary-grid" id="aiCards">
+    {% for meter, cost_val in ai_items %}
+    <div class="card meter-card" {% if loop.index > 10 %}style="display:none;"{% endif %}>
+      <div class="sub" style="font-weight:600;color:#1a1a2e;margin-bottom:.35rem;">{{ meter }}</div>
+      {% if cost_val > 0 %}
+      <div class="value">${{ "%.2f"|format(cost_val) }}</div>
+      {% endif %}
+      <div class="sub" style="color:#888;">{{ "%.4f"|format(ai_quantity.get(meter, 0)) }} {{ ai_unit.get(meter, "") }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if ai_items|length > 10 %}
+  <button class="show-more-btn" id="showMoreBtnAI" onclick="toggleCards('aiCards', this)">
+    Show all {{ ai_items|length }} meters &#9662;
+  </button>
+  {% endif %}
+
+  {% if ai_total_cost > 0 %}
+  <div class="grand-total" style="background:linear-gradient(135deg,#5c2d91,#8764b8);margin-bottom:1.5rem;">
+    <div class="grand-total-grid">
+      <div>
+        <div class="label">AI usage total</div>
+        <div class="amount">${{ "%.2f"|format(ai_total_cost) }}</div>
+      </div>
+      <div>
+        <div class="label">Share of total cost</div>
+        <div class="amount">{{ "%.1f"|format(ai_total_cost / grand_total_cost * 100 if grand_total_cost else 0) }}%</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  {% endif %}
+
+  <!-- Cache efficiency -->
+  {% if cache_efficiency %}
+  <div class="chart-section">
+    <div class="chart-title" style="margin-bottom:.75rem;">Cache Efficiency by Model</div>
+    <table style="width:auto;font-size:.88rem;border-collapse:collapse;">
+      <thead>
+        <tr style="background:#f0f2f5;">
+          <th style="padding:.5rem 1rem;text-align:left;color:#1a1a2e;font-weight:600;">Model</th>
+          <th style="padding:.5rem 1rem;text-align:right;color:#1a1a2e;font-weight:600;">Cache hit %</th>
+          <th style="padding:.5rem 1rem;min-width:200px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for model, ratio in cache_efficiency.items() %}
+        <tr>
+          <td style="padding:.4rem 1rem;font-weight:500;">{{ model }}</td>
+          <td style="padding:.4rem 1rem;text-align:right;">{{ "%.1f"|format(ratio * 100) }}%</td>
+          <td style="padding:.4rem 1rem;">
+            <div style="background:#e0e0e0;border-radius:4px;height:16px;width:100%;">
+              <div style="background:#0078d4;border-radius:4px;height:16px;width:{{ "%.1f"|format(ratio * 100) }}%;"></div>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- Rate mapping reference -->
+  {% if brsdt_rate_labels %}
+  <div class="chart-section">
+    <div class="chart-title" style="margin-bottom:.75rem;">BRSDT Rate Mapping Reference</div>
+    <table class="rate-ref-table">
+      <thead><tr><th>Rate ($/unit)</th><th>Model &amp; token type</th></tr></thead>
+      <tbody>
+        {% for rate in brsdt_other_rates|sort %}
+        <tr><td class="num">{{ "%.2f"|format(rate) }}</td><td style="color:#888;">Non-AI sponsored services</td></tr>
+        {% endfor %}
+        {% for rate, label in brsdt_rate_labels.items()|sort %}
+        <tr><td class="num">{{ "%.2f"|format(rate) }}</td><td>{{ label }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if brsdt_unmatched_rates %}
+    <div class="rate-ref-note">
+      <span class="unmatched-badge">Unmatched</span>
+      Rates seen in this data that don't match any known model:
+      {% for rate in brsdt_unmatched_rates %}${{ "%.2f"|format(rate) }}{% if not loop.last %}, {% endif %}{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+  </div>
 
   <!-- Cost Chart -->
   {% if chart_labels and grand_total_cost > 0 %}
@@ -315,6 +549,13 @@
     <div class="chart-header">
       <span class="chart-title">Daily Estimated Cost</span>
       <div class="chart-controls">
+        <div class="field">
+          <label for="chartType">Chart type</label>
+          <select id="chartType" onchange="renderCostChart()">
+            <option value="bar" selected>Bar</option>
+            <option value="pie">Pie</option>
+          </select>
+        </div>
         <div class="field">
           <label for="topN">Top meters</label>
           <select id="topN" onchange="renderCostChart()">
@@ -336,13 +577,13 @@
   <div class="table-filters">
     <div class="tf">
       <label for="fCategory">Meter category</label>
-      <select id="fCategory" onchange="filterTable()">
+      <select id="fCategory" onchange="onCategoryChange()">
         <option value="">All</option>
       </select>
     </div>
     <div class="tf">
       <label for="fSubCategory">Meter sub-category</label>
-      <select id="fSubCategory" onchange="filterTable()">
+      <select id="fSubCategory" onchange="onSubCategoryChange()">
         <option value="">All</option>
       </select>
     </div>
@@ -353,6 +594,28 @@
       </select>
     </div>
   </div>
+
+  <div class="table-toolbar">
+    <div class="meta"><span id="visibleRowCount">{{ records|length }}</span> visible rows</div>
+    <div class="table-actions">
+      <button type="button" class="secondary-btn" id="configureColumnsBtn" aria-expanded="false" aria-controls="columnConfigPanel">
+        Configure columns
+      </button>
+      <button type="button" class="secondary-btn" id="exportCsvBtn">Export CSV</button>
+      <button type="button" class="secondary-btn" id="exportJsonBtn">Export JSON</button>
+    </div>
+  </div>
+
+  <div class="column-panel" id="columnConfigPanel" hidden>
+    <div class="column-panel-header">
+      <div>
+        <div class="column-panel-title">Visible columns</div>
+        <div class="column-panel-note">Saved in this browser and used for export output.</div>
+      </div>
+      <button type="button" class="secondary-btn" id="resetColumnsBtn">Reset columns</button>
+    </div>
+    <div class="column-grid" id="columnConfigOptions"></div>
+  </div>
   {% endif %}
 
   <!-- Detail table -->
@@ -361,27 +624,29 @@
     <table id="usageTable">
       <thead>
         <tr>
-          <th class="sortable" data-col="0" data-type="string">Usage start</th>
-          <th class="sortable" data-col="1" data-type="string">Usage end</th>
-          <th>Meter category</th>
-          <th>Meter sub-category</th>
-          <th>Meter name</th>
-          <th>Unit</th>
-          <th class="sortable num" data-col="6" data-type="num">Quantity</th>
-          <th class="sortable num" data-col="7" data-type="num">Est. cost</th>
+          <th class="sortable" data-col="0" data-type="string" data-column="usage_start">Usage start</th>
+          <th class="sortable" data-col="1" data-type="string" data-column="usage_end">Usage end</th>
+          <th data-column="meter_category">Meter category</th>
+          <th data-column="meter_sub_category">Meter sub-category</th>
+          <th data-column="meter_name">Meter name</th>
+          <th data-column="meter_id">Meter ID</th>
+          <th data-column="unit">Unit</th>
+          <th class="sortable num" data-col="7" data-type="num" data-column="quantity">Quantity</th>
+          <th class="sortable num" data-col="8" data-type="num" data-column="cost">Est. cost</th>
         </tr>
       </thead>
       <tbody>
         {% for rec in records %}
         <tr>
-          <td>{{ (rec.usage_start|string)[:10] if granularity == 'Daily' else rec.usage_start }}</td>
-          <td>{{ (rec.usage_end|string)[:10] if granularity == 'Daily' else rec.usage_end }}</td>
-          <td>{{ rec.meter_category or '' }}</td>
-          <td>{{ rec.meter_sub_category or '' }}</td>
-          <td>{{ rec.meter_name or rec.name or '' }}</td>
-          <td>{{ rec.unit }}</td>
-          <td class="num">{{ "%.6f"|format(rec.quantity|float) }}</td>
-          <td class="num">{% if rec.cost %}${{ "%.2f"|format(rec.cost) }}{% else %}&ndash;{% endif %}</td>
+          <td data-column="usage_start">{{ (rec.usage_start|string)[:10] if granularity == 'Daily' else rec.usage_start }}</td>
+          <td data-column="usage_end">{{ (rec.usage_end|string)[:10] if granularity == 'Daily' else rec.usage_end }}</td>
+          <td data-column="meter_category">{{ rec.meter_category or '' }}</td>
+          <td data-column="meter_sub_category">{{ rec.meter_sub_category or '' }}</td>
+          <td data-column="meter_name">{{ rec.meter_name or rec.name or '' }}</td>
+          <td data-column="meter_id">{{ rec.meter_id or '' }}</td>
+          <td data-column="unit">{{ rec.unit }}</td>
+          <td class="num" data-column="quantity">{{ "%.6f"|format(rec.quantity|float) }}</td>
+          <td class="num" data-column="cost" data-value="{{ rec.cost|format_cost }}">{% if rec.cost %}${{ rec.cost|format_cost }}{% else %}0.00{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -395,15 +660,157 @@
 </main>
 
 <script>
+  var TABLE_COLUMNS = [
+    { key: 'usage_start', label: 'Usage start' },
+    { key: 'usage_end', label: 'Usage end' },
+    { key: 'meter_category', label: 'Meter category' },
+    { key: 'meter_sub_category', label: 'Meter sub-category' },
+    { key: 'meter_name', label: 'Meter name' },
+    { key: 'meter_id', label: 'Meter ID' },
+    { key: 'unit', label: 'Unit' },
+    { key: 'quantity', label: 'Quantity' },
+    { key: 'cost', label: 'Est. cost' }
+  ];
+  var COLUMN_STORAGE_KEY = 'azureSponsorshipMonitor.visibleColumns';
+
+  function getVisibleRows(table) {
+    return Array.from(table.querySelectorAll('tbody tr')).filter(function (row) {
+      return row.style.display !== 'none';
+    });
+  }
+
+  function updateVisibleRowCount() {
+    var table = document.getElementById('usageTable');
+    var count = document.getElementById('visibleRowCount');
+    if (!table || !count) return;
+    count.textContent = String(getVisibleRows(table).length);
+  }
+
+  function readStoredColumns() {
+    try {
+      var raw = window.localStorage.getItem(COLUMN_STORAGE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function writeStoredColumns(keys) {
+    try {
+      window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(keys));
+    } catch (err) {
+      return;
+    }
+  }
+
+  function getSelectedColumns() {
+    var stored = readStoredColumns();
+    var validKeys = TABLE_COLUMNS.map(function (column) { return column.key; });
+    if (!stored || !stored.length) return validKeys;
+    var selected = stored.filter(function (key) { return validKeys.indexOf(key) !== -1; });
+    return selected.length ? selected : validKeys;
+  }
+
+  function applyColumnVisibility(selectedColumns) {
+    var allowed = new Set(selectedColumns);
+    TABLE_COLUMNS.forEach(function (column) {
+      var cells = document.querySelectorAll('[data-column="' + column.key + '"]');
+      var hidden = !allowed.has(column.key);
+      cells.forEach(function (cell) {
+        cell.classList.toggle('is-hidden-column', hidden);
+      });
+    });
+  }
+
+  function syncColumnInputs(selectedColumns) {
+    var allowed = new Set(selectedColumns);
+    document.querySelectorAll('#columnConfigOptions input[type="checkbox"]').forEach(function (input) {
+      input.checked = allowed.has(input.value);
+    });
+  }
+
+  function collectVisibleTableData() {
+    var table = document.getElementById('usageTable');
+    if (!table) return { columns: [], rows: [] };
+    var selectedColumns = getSelectedColumns();
+    var columns = TABLE_COLUMNS.filter(function (column) {
+      return selectedColumns.indexOf(column.key) !== -1;
+    });
+    var rows = getVisibleRows(table).map(function (row) {
+      var item = {};
+      columns.forEach(function (column) {
+        var cell = row.querySelector('[data-column="' + column.key + '"]');
+        item[column.label] = cell ? (cell.dataset.value !== undefined ? cell.dataset.value : cell.textContent.trim()) : '';
+      });
+      return item;
+    });
+    return { columns: columns, rows: rows };
+  }
+
+  function triggerDownload(filename, content, mimeType) {
+    var blob = new Blob([content], { type: mimeType });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function buildExportFilename(extension) {
+    var start = document.getElementById('start');
+    var end = document.getElementById('end');
+    var parts = ['azure-usage-export'];
+    if (start && start.value) parts.push(start.value);
+    if (end && end.value) parts.push(end.value);
+    return parts.join('-') + '.' + extension;
+  }
+
+  function exportVisibleRows(format) {
+    var tableData = collectVisibleTableData();
+    if (!tableData.rows.length) return;
+
+    if (format === 'json') {
+      triggerDownload(
+        buildExportFilename('json'),
+        JSON.stringify(tableData.rows, null, 2),
+        'application/json;charset=utf-8'
+      );
+      return;
+    }
+
+    var csvRows = [];
+    csvRows.push(tableData.columns.map(function (column) { return column.label; }));
+    tableData.rows.forEach(function (row) {
+      csvRows.push(tableData.columns.map(function (column) {
+        return row[column.label] || '';
+      }));
+    });
+
+    var csvContent = csvRows.map(function (cells) {
+      return cells.map(function (value) {
+        var normalized = String(value).replace(/"/g, '""');
+        return '"' + normalized + '"';
+      }).join(',');
+    }).join('\r\n');
+
+    triggerDownload(buildExportFilename('csv'), csvContent, 'text/csv;charset=utf-8');
+  }
+
   /* ── loading spinner ── */
   document.getElementById('filterForm').addEventListener('submit', function () {
     document.getElementById('loadingOverlay').classList.add('active');
   });
 
   /* ── show more / less cards ── */
-  function toggleCards() {
-    var cards = document.querySelectorAll('.meter-card');
-    var btn = document.getElementById('showMoreBtn');
+  function toggleCards(gridId, btn) {
+    var grid = document.getElementById(gridId);
+    if (!grid || !btn) return;
+    var cards = grid.querySelectorAll('.meter-card');
     var hidden = cards[10] && cards[10].style.display === 'none';
     for (var i = 10; i < cards.length; i++) {
       cards[i].style.display = hidden ? '' : 'none';
@@ -411,6 +818,18 @@
     btn.innerHTML = hidden
       ? 'Show top 10 &#9652;'
       : 'Show all ' + cards.length + ' meters &#9662;';
+  }
+
+  /* ── view toggle (Services / AI Detail) ── */
+  var currentView = 'services';
+  function switchView(view) {
+    currentView = view;
+    document.getElementById('viewServices').style.display = view === 'services' ? '' : 'none';
+    document.getElementById('viewAI').style.display = view === 'ai' ? '' : 'none';
+    document.querySelectorAll('.toggle-btn').forEach(function (btn) {
+      btn.classList.toggle('active', btn.dataset.view === view);
+    });
+    if (typeof renderCostChart === 'function') renderCostChart();
   }
 
   /* ── table sorting ── */
@@ -445,34 +864,60 @@
     });
   })();
 
-  /* ── table filtering ── */
+  /* ── hierarchical table filtering ── */
+  var _allRows = [];
   (function () {
     var table = document.getElementById('usageTable');
     if (!table) return;
-    var rows = Array.from(table.querySelectorAll('tbody tr'));
-
-    var cats = new Set(), subs = new Set(), names = new Set();
-    rows.forEach(function (r) {
-      var c = r.cells[2].textContent.trim();
-      var s = r.cells[3].textContent.trim();
-      var n = r.cells[4].textContent.trim();
-      if (c) cats.add(c);
-      if (s) subs.add(s);
-      if (n) names.add(n);
+    _allRows = Array.from(table.querySelectorAll('tbody tr')).map(function (r) {
+      return {
+        el: r,
+        cat: r.cells[2].textContent.trim(),
+        sub: r.cells[3].textContent.trim(),
+        name: r.cells[4].textContent.trim()
+      };
     });
-
-    function fill(id, values) {
-      var sel = document.getElementById(id);
-      Array.from(values).sort().forEach(function (v) {
-        var opt = document.createElement('option');
-        opt.value = v; opt.textContent = v;
-        sel.appendChild(opt);
-      });
-    }
-    fill('fCategory', cats);
-    fill('fSubCategory', subs);
-    fill('fMeterName', names);
+    populateDropdown('fCategory', uniqueSorted(_allRows.map(function (r) { return r.cat; })));
+    populateDropdown('fSubCategory', uniqueSorted(_allRows.map(function (r) { return r.sub; })));
+    populateDropdown('fMeterName', uniqueSorted(_allRows.map(function (r) { return r.name; })));
   })();
+
+  function uniqueSorted(arr) {
+    var s = new Set();
+    arr.forEach(function (v) { if (v) s.add(v); });
+    return Array.from(s).sort();
+  }
+
+  function populateDropdown(id, values, keep) {
+    var sel = document.getElementById(id);
+    if (!sel) return;
+    var prev = sel.value;
+    while (sel.options.length > 1) sel.remove(1);
+    values.forEach(function (v) {
+      var opt = document.createElement('option');
+      opt.value = v; opt.textContent = v;
+      sel.appendChild(opt);
+    });
+    sel.value = (keep && values.indexOf(prev) !== -1) ? prev : '';
+  }
+
+  function onCategoryChange() {
+    var fc = document.getElementById('fCategory').value;
+    var matching = fc ? _allRows.filter(function (r) { return r.cat === fc; }) : _allRows;
+    populateDropdown('fSubCategory', uniqueSorted(matching.map(function (r) { return r.sub; })));
+    populateDropdown('fMeterName', uniqueSorted(matching.map(function (r) { return r.name; })));
+    filterTable();
+  }
+
+  function onSubCategoryChange() {
+    var fc = document.getElementById('fCategory').value;
+    var fs = document.getElementById('fSubCategory').value;
+    var matching = _allRows;
+    if (fc) matching = matching.filter(function (r) { return r.cat === fc; });
+    if (fs) matching = matching.filter(function (r) { return r.sub === fs; });
+    populateDropdown('fMeterName', uniqueSorted(matching.map(function (r) { return r.name; })));
+    filterTable();
+  }
 
   function filterTable() {
     var table = document.getElementById('usageTable');
@@ -480,15 +925,80 @@
     var fc = document.getElementById('fCategory').value;
     var fs = document.getElementById('fSubCategory').value;
     var fn = document.getElementById('fMeterName').value;
-    var rows = table.querySelectorAll('tbody tr');
-    rows.forEach(function (r) {
-      var cat = r.cells[2].textContent.trim();
-      var sub = r.cells[3].textContent.trim();
-      var name = r.cells[4].textContent.trim();
-      var show = (!fc || cat === fc) && (!fs || sub === fs) && (!fn || name === fn);
-      r.style.display = show ? '' : 'none';
+    _allRows.forEach(function (r) {
+      var show = (!fc || r.cat === fc) && (!fs || r.sub === fs) && (!fn || r.name === fn);
+      r.el.style.display = show ? '' : 'none';
     });
+    updateVisibleRowCount();
+    if (typeof renderCostChart === 'function') renderCostChart();
   }
+
+  (function () {
+    var table = document.getElementById('usageTable');
+    var panel = document.getElementById('columnConfigPanel');
+    var options = document.getElementById('columnConfigOptions');
+    var toggleBtn = document.getElementById('configureColumnsBtn');
+    var resetBtn = document.getElementById('resetColumnsBtn');
+    var csvBtn = document.getElementById('exportCsvBtn');
+    var jsonBtn = document.getElementById('exportJsonBtn');
+    if (!table || !panel || !options || !toggleBtn || !csvBtn || !jsonBtn) return;
+
+    TABLE_COLUMNS.forEach(function (column) {
+      var label = document.createElement('label');
+      label.className = 'column-option';
+
+      var input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = column.key;
+      input.addEventListener('change', function () {
+        var selected = Array.from(options.querySelectorAll('input:checked')).map(function (checkbox) {
+          return checkbox.value;
+        });
+        if (!selected.length) {
+          input.checked = true;
+          return;
+        }
+        applyColumnVisibility(selected);
+        writeStoredColumns(selected);
+      });
+
+      var text = document.createElement('span');
+      text.textContent = column.label;
+
+      label.appendChild(input);
+      label.appendChild(text);
+      options.appendChild(label);
+    });
+
+    function setPanelOpen(open) {
+      panel.hidden = !open;
+      panel.classList.toggle('open', open);
+      toggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
+    var selectedColumns = getSelectedColumns();
+    applyColumnVisibility(selectedColumns);
+    syncColumnInputs(selectedColumns);
+    updateVisibleRowCount();
+
+    toggleBtn.addEventListener('click', function () {
+      setPanelOpen(panel.hidden);
+    });
+
+    resetBtn.addEventListener('click', function () {
+      writeStoredColumns(TABLE_COLUMNS.map(function (column) { return column.key; }));
+      applyColumnVisibility(TABLE_COLUMNS.map(function (column) { return column.key; }));
+      syncColumnInputs(TABLE_COLUMNS.map(function (column) { return column.key; }));
+    });
+
+    csvBtn.addEventListener('click', function () {
+      exportVisibleRows('csv');
+    });
+
+    jsonBtn.addEventListener('click', function () {
+      exportVisibleRows('json');
+    });
+  })();
 </script>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
@@ -496,8 +1006,16 @@
   /* ── cost chart ── */
   (function () {
     var chartLabels = {{ chart_labels | tojson }};
-    var chartSeries = {{ chart_series_data | tojson }};
-    var chartMeterOrder = {{ chart_meter_order | tojson }};
+    var viewChartData = {
+      services: {
+        series: {{ svc_chart_series | tojson }},
+        order: {{ svc_meter_order | tojson }}
+      },
+      ai: {
+        series: {{ ai_chart_series | tojson }},
+        order: {{ ai_meter_order | tojson }}
+      }
+    };
     if (!chartLabels || !chartLabels.length) return;
 
     var PALETTE = [
@@ -506,20 +1024,104 @@
     ];
     var OTHERS_COLOR = '#c8c8c8';
     var costChartInstance = null;
+    var percentLabelPlugin = {
+      id: 'piePercentLabels',
+      afterDatasetsDraw: function (chart) {
+        if (chart.config.type !== 'pie') return;
+        var dataset = chart.data.datasets[0];
+        if (!dataset || !dataset.data || !dataset.data.length) return;
+
+        var total = dataset.data.reduce(function (sum, value) {
+          return sum + value;
+        }, 0);
+        if (!total) return;
+
+        var ctx = chart.ctx;
+        var meta = chart.getDatasetMeta(0);
+        ctx.save();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '600 12px "Segoe UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        meta.data.forEach(function (arc, index) {
+          var value = dataset.data[index] || 0;
+          if (!value) return;
+          var percentage = (value / total) * 100;
+          var position = arc.tooltipPosition();
+          ctx.fillText(percentage.toFixed(1) + '%', position.x, position.y);
+        });
+        ctx.restore();
+      }
+    };
+    Chart.register(percentLabelPlugin);
+
+    /* Build chart data from visible table rows when filters are active */
+    function getFilteredChartData() {
+      var fc = document.getElementById('fCategory');
+      var fs = document.getElementById('fSubCategory');
+      var fn = document.getElementById('fMeterName');
+      var hasFilter = (fc && fc.value) || (fs && fs.value) || (fn && fn.value);
+
+      if (!hasFilter) {
+        var vd = viewChartData[currentView] || viewChartData.services;
+        return { series: vd.series, order: vd.order, labels: chartLabels };
+      }
+
+      /* Aggregate cost per meter per day from visible table rows */
+      var table = document.getElementById('usageTable');
+      var series = {};
+      var totals = {};
+      var dateSet = {};
+      if (table) {
+        var rows = table.querySelectorAll('tbody tr');
+        rows.forEach(function (r) {
+          if (r.style.display === 'none') return;
+          var date = r.cells[0].textContent.trim();
+          var meter = r.cells[4].textContent.trim() || 'Unknown';
+          var costCell = r.cells[8];
+          var cost = parseFloat(costCell.getAttribute('data-value') || '0') || 0;
+          if (!date) return;
+          dateSet[date] = true;
+          if (!series[meter]) series[meter] = {};
+          series[meter][date] = (series[meter][date] || 0) + cost;
+          totals[meter] = (totals[meter] || 0) + cost;
+        });
+      }
+
+      var dates = Object.keys(dateSet).sort();
+      var order = Object.keys(totals).sort(function (a, b) {
+        return (totals[b] || 0) - (totals[a] || 0);
+      }).filter(function (m) { return totals[m] > 0; });
+
+      /* Convert series from {meter: {date: cost}} to {meter: [cost, ...]} */
+      var arrayedSeries = {};
+      order.forEach(function (meter) {
+        arrayedSeries[meter] = dates.map(function (d) {
+          return (series[meter] || {})[d] || 0;
+        });
+      });
+
+      return { series: arrayedSeries, order: order, labels: dates };
+    }
 
     function buildDatasets(topN) {
+      var filtered = getFilteredChartData();
+      var chartSeries = filtered.series;
+      var chartMeterOrder = filtered.order;
+      var labels = filtered.labels;
       var top = chartMeterOrder.slice(0, topN);
       var rest = chartMeterOrder.slice(topN);
       var sets = top.map(function (m, i) {
         return {
           label: m,
-          data: chartSeries[m] || chartLabels.map(function () { return 0; }),
+          data: chartSeries[m] || labels.map(function () { return 0; }),
           backgroundColor: PALETTE[i % PALETTE.length],
           stack: 'cost'
         };
       });
       if (rest.length > 0) {
-        var othersData = chartLabels.map(function (_, di) {
+        var othersData = labels.map(function (_, di) {
           return rest.reduce(function (s, m) {
             return s + ((chartSeries[m] || [])[di] || 0);
           }, 0);
@@ -533,47 +1135,138 @@
           });
         }
       }
-      return sets;
+      return { datasets: sets, labels: labels };
+    }
+
+    function buildPieDataset(topN) {
+      var filtered = getFilteredChartData();
+      var chartSeries = filtered.series;
+      var chartMeterOrder = filtered.order;
+      var top = chartMeterOrder.slice(0, topN);
+      var rest = chartMeterOrder.slice(topN);
+      var labels = top.slice();
+      var values = top.map(function (meter) {
+        return (chartSeries[meter] || []).reduce(function (sum, value) {
+          return sum + value;
+        }, 0);
+      });
+      var colors = top.map(function (_, index) {
+        return PALETTE[index % PALETTE.length];
+      });
+
+      if (rest.length > 0) {
+        var othersValue = rest.reduce(function (sum, meter) {
+          return sum + (chartSeries[meter] || []).reduce(function (meterSum, value) {
+            return meterSum + value;
+          }, 0);
+        }, 0);
+        if (othersValue > 0) {
+          labels.push('Others (' + rest.length + ')');
+          values.push(othersValue);
+          colors.push(OTHERS_COLOR);
+        }
+      }
+
+      return {
+        labels: labels,
+        datasets: [{
+          data: values,
+          backgroundColor: colors,
+          borderColor: '#ffffff',
+          borderWidth: 2,
+          hoverOffset: 10
+        }]
+      };
     }
 
     window.renderCostChart = function () {
       var topN = parseInt(document.getElementById('topN').value, 10);
-      var datasets = buildDatasets(topN);
+      var chartType = document.getElementById('chartType').value;
+      var title = document.querySelector('.chart-title');
       var ctx = document.getElementById('costChart');
+      var wrap = document.querySelector('.chart-canvas-wrap');
       if (!ctx) return;
-      if (costChartInstance) {
-        costChartInstance.data.datasets = datasets;
-        costChartInstance.update('none');
-        return;
+
+      var fc = document.getElementById('fCategory');
+      var fs = document.getElementById('fSubCategory');
+      var fn = document.getElementById('fMeterName');
+      var hasFilter = (fc && fc.value) || (fs && fs.value) || (fn && fn.value);
+      var filterHint = hasFilter ? ' (filtered)' : '';
+
+      if (title) {
+        title.textContent = (chartType === 'pie' ? 'Estimated Cost by Meter' : 'Daily Estimated Cost') + filterHint;
       }
-      costChartInstance = new Chart(ctx, {
-        type: 'bar',
-        data: { labels: chartLabels, datasets: datasets },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          scales: {
-            x: { stacked: true, grid: { display: false } },
-            y: {
-              stacked: true,
-              ticks: {
-                callback: function (v) { return '$' + v.toFixed(2); }
+      if (wrap) {
+        wrap.classList.toggle('pie-mode', chartType === 'pie');
+      }
+
+      var chartConfig;
+      if (chartType === 'pie') {
+        var pieData = buildPieDataset(topN);
+        chartConfig = {
+          type: 'pie',
+          data: pieData,
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: { padding: 12 },
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  label: function (tooltipItem) {
+                    var dataset = tooltipItem.dataset.data || [];
+                    var total = dataset.reduce(function (sum, value) { return sum + value; }, 0);
+                    var value = typeof tooltipItem.raw === 'number' ? tooltipItem.raw : 0;
+                    var percentage = total ? (value / total) * 100 : 0;
+                    return ' ' + tooltipItem.label + ': $' + value.toFixed(2) + ' (' + percentage.toFixed(1) + '%)';
+                  }
+                }
+              },
+              legend: {
+                position: 'right',
+                labels: { boxWidth: 12, padding: 16 }
               }
             }
-          },
-          plugins: {
-            tooltip: {
-              callbacks: {
-                label: function (ctx) {
-                  var val = typeof ctx.raw === 'number' ? ctx.raw : 0;
-                  return ' ' + ctx.dataset.label + ': $' + val.toFixed(4);
+          }
+        };
+      } else {
+        var built = buildDatasets(topN);
+        chartConfig = {
+          type: 'bar',
+          data: { labels: built.labels, datasets: built.datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              x: { stacked: true, grid: { display: false } },
+              y: {
+                stacked: true,
+                ticks: {
+                  callback: function (v) { return '$' + v.toFixed(2); }
                 }
               }
             },
-            legend: { position: 'bottom', labels: { boxWidth: 12, padding: 16 } }
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  label: function (ctx) {
+                    var val = typeof ctx.raw === 'number' ? ctx.raw : 0;
+                    return ' ' + ctx.dataset.label + ': $' + val.toFixed(4);
+                  }
+                }
+              },
+              legend: { position: 'bottom', labels: { boxWidth: 12, padding: 16 } }
+            }
           }
-        }
-      });
+        };
+      }
+
+      if (costChartInstance) {
+        costChartInstance.destroy();
+        costChartInstance = null;
+      }
+
+      costChartInstance = new Chart(ctx, chartConfig);
     };
 
     renderCostChart();
