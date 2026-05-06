@@ -23,8 +23,11 @@ Environment variables (see .env.example):
 
 import logging
 import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
+import requests
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.commerce import UsageManagementClient
 from dotenv import load_dotenv
@@ -118,6 +121,110 @@ def calculate_cost(quantity: float, rate_info: dict) -> float:
     return cost
 
 
+# ---------------------------------------------------------------------------
+# Live pricing from Azure Retail Prices API
+# ---------------------------------------------------------------------------
+_RETAIL_CACHE: dict[float, str] | None = None
+_RETAIL_CACHE_TIME: float = 0.0
+_RETAIL_CACHE_TTL = 86_400  # 24 h
+_RETAIL_LOCK = threading.Lock()
+
+# Static fallback — used if the API is unreachable.
+# Rates are $/M tokens (= retailPrice_per_1K × 1000), GlobalStandard PAYG.
+# Keep this updated manually as a last resort, but the live fetch takes priority.
+_BRSDT_RATE_LABELS_STATIC: dict[float, str] = {
+    0.10:  "Sora 2 · video ($/sec)",
+    0.17:  "GPT-5.2 · cached input",
+    0.25:  "GPT-5.4 · cached input",
+    0.50:  "GPT-5.4-pp · cached input",
+    1.25:  "GPT-5.5 · cached input",
+    1.75:  "GPT-5.2 · input",
+    2.50:  "GPT-5.4 · input",
+    5.00:  "GPT-5.5 · input / GPT-5.4-pp · input",
+    14.00: "GPT-5.2 · output",
+    15.00: "GPT-5.4 · output",
+    30.00: "GPT-5.5 · output / GPT-5.4-pro · input / GPT-5.4-pp · output",
+    180.00:"GPT-5.4-pro · output",
+}
+
+
+def _retail_label(meter_name: str) -> str:
+    """'GPT-5.4 Input' → 'GPT-5.4 · input'  (best-effort normalisation)"""
+    meter_name = meter_name.strip()
+    # Common suffixes from the Retail API meter names
+    for suffix in (" Input", " Output", " Cached Input", " Cache Reads"):
+        if meter_name.endswith(suffix):
+            model = meter_name[: -len(suffix)]
+            token_type = suffix.strip().lower().replace(" ", "_")
+            return f"{model} · {token_type}"
+    return meter_name
+
+
+def fetch_retail_price_lookup() -> dict[float, str]:
+    """
+    Return a dict mapping implied $/M-token rate → human label.
+    Fetches Azure Retail Prices API (no auth required) and caches for 24 h.
+    Falls back to _BRSDT_RATE_LABELS_STATIC if the fetch fails.
+
+    The Retail API returns retailPrice per 1K tokens (unitOfMeasure='1K Tokens').
+    BRSDT implied_rate = cost / qty where qty is in M-token units, so:
+        rate_key = retailPrice_per_1K * 1000
+    """
+    global _RETAIL_CACHE, _RETAIL_CACHE_TIME
+
+    with _RETAIL_LOCK:
+        now = time.monotonic()
+        if _RETAIL_CACHE is not None and (now - _RETAIL_CACHE_TIME) < _RETAIL_CACHE_TTL:
+            return _RETAIL_CACHE
+
+        url = "https://prices.azure.com/api/retail/prices"
+        params = {
+            "api-version": "2023-01-01-preview",
+            # GlobalStandard covers your deployment type; extend filter if needed
+            "$filter": "serviceName eq 'Azure OpenAI' and contains(skuName, 'Global')",
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            items = resp.json().get("Items", [])
+
+            lookup: dict[float, str] = {}
+            for item in items:
+                unit = item.get("unitOfMeasure", "")
+                price = item.get("retailPrice") or 0.0
+                meter_name = item.get("meterName", "")
+
+                if not price or not meter_name:
+                    continue
+
+                # Normalise to $/M tokens
+                if "1K" in unit:
+                    rate_per_m = price * 1000
+                elif "1M" in unit:
+                    rate_per_m = price
+                else:
+                    # Unknown unit — skip rather than guess
+                    log.debug("Retail API: skipping unknown unit %r for %r", unit, meter_name)
+                    continue
+
+                rate_key = round(rate_per_m, 2)
+                if rate_key > 0 and rate_key not in lookup:
+                    lookup[rate_key] = _retail_label(meter_name)
+
+            if lookup:
+                log.info("Retail Prices API: loaded %d rate entries", len(lookup))
+                _RETAIL_CACHE = lookup
+                _RETAIL_CACHE_TIME = now
+                return lookup
+
+            log.warning("Retail Prices API returned 0 usable entries — using static fallback")
+
+        except Exception:
+            log.warning("Retail Prices API fetch failed — using static fallback", exc_info=True)
+
+        return dict(_BRSDT_RATE_LABELS_STATIC)
+
+
 # Maps unit rate ($/unit, rounded to 2 dp) to a human-readable AI meter label.
 # Rates confirmed from live billing data on MS-AZR-0036P (April 2026).
 _BRSDT_RATE_LABELS: dict[float, str] = {
@@ -155,9 +262,13 @@ def _match_brsdt_rate(implied_rate: float) -> tuple[bool, str | None]:
             return True, None
 
     # AI model rates (relative tolerance for tiered / FP edge-cases)
+    rate_labels = fetch_retail_price_lookup()
+
     best_label: str | None = None
     best_distance = float("inf")
-    for rate, label in _BRSDT_RATE_LABELS.items():
+    for rate, label in rate_labels.items():
+        if rate == 0:
+            continue
         rel_distance = abs(implied_rate - rate) / rate
         if rel_distance < _BRSDT_RATE_TOLERANCE and rel_distance < best_distance:
             best_distance = rel_distance

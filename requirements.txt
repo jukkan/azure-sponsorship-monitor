@@ -3,3 +3,4 @@ azure-mgmt-commerce==6.0.0
 azure-identity==1.21.0
 python-dotenv==1.1.0
 six>=1.16.0
+requests>=2.31.0
