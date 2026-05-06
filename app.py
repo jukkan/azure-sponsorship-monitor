@@ -152,10 +152,11 @@ def _retail_label(meter_name: str) -> str:
     """'GPT-5.4 Input' → 'GPT-5.4 · input'  (best-effort normalisation)"""
     meter_name = meter_name.strip()
     # Common suffixes from the Retail API meter names
-    for suffix in (" Input", " Output", " Cached Input", " Cache Reads"):
+    # Note: Check longer suffixes first to avoid partial matches
+    for suffix in (" Cached Input", " Cache Reads", " Input", " Output"):
         if meter_name.endswith(suffix):
             model = meter_name[: -len(suffix)]
-            token_type = suffix.strip().lower().replace(" ", "_")
+            token_type = suffix.strip().lower()
             return f"{model} · {token_type}"
     return meter_name
 
@@ -227,19 +228,6 @@ def fetch_retail_price_lookup() -> dict[float, str]:
 
 # Maps unit rate ($/unit, rounded to 2 dp) to a human-readable AI meter label.
 # Rates confirmed from live billing data on MS-AZR-0036P (April 2026).
-_BRSDT_RATE_LABELS: dict[float, str] = {
-    0.10: "Sora 2 · video ($/sec)",
-    0.17: "GPT-5.2 · cached input",   # legacy rate, pre-March 2026
-    0.25: "GPT-5.4 · cached input",
-    0.50: "GPT-5.4-pp · cached input",
-    1.75: "GPT-5.2 · input",
-    2.50: "GPT-5.4 · input",
-    5.00: "GPT-5.4-pp · input",
-    14.00: "GPT-5.2 · output",
-    15.00: "GPT-5.4 · output",
-    30.00: "GPT-5.4-pro · input / GPT-5.4-pp · output",
-    180.00: "GPT-5.4-pro · output",
-}
 _BRSDT_OTHER_RATES: frozenset[float] = frozenset({0.04})
 _BRSDT_PREFIX = "Daily_BRSDT_"
 _BRSDT_AI_CATEGORY = "Azure OpenAI"
@@ -648,7 +636,7 @@ def index():
         ai_chart_series=ai_chart_series,
         ai_meter_order=ai_meter_order,
         ai_total_cost=ai_total_cost,
-        brsdt_rate_labels=_BRSDT_RATE_LABELS,
+        brsdt_rate_labels=_BRSDT_RATE_LABELS_STATIC,
         brsdt_other_rates=_BRSDT_OTHER_RATES,
         brsdt_unmatched_rates=sorted(brsdt_unmatched_rates),
     )

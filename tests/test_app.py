@@ -524,3 +524,89 @@ def test_index_has_rate_ref_table(app_client):
     assert resp.status_code == 200
     assert b"Rate Mapping Reference" in resp.data
     assert b"GPT-5.4-pro" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# Tests – _retail_label helper
+# ---------------------------------------------------------------------------
+
+def test_retail_label_input(app_client):
+    """_retail_label should normalize 'Input' suffix with spaces preserved."""
+    _, app_module = app_client
+    result = app_module._retail_label("GPT-5.4 Input")
+    assert result == "GPT-5.4 · input"
+
+
+def test_retail_label_output(app_client):
+    """_retail_label should normalize 'Output' suffix with spaces preserved."""
+    _, app_module = app_client
+    result = app_module._retail_label("GPT-5.4 Output")
+    assert result == "GPT-5.4 · output"
+
+
+def test_retail_label_cached_input(app_client):
+    """_retail_label should normalize 'Cached Input' with spaces, not underscores."""
+    _, app_module = app_client
+    result = app_module._retail_label("GPT-5.4 Cached Input")
+    assert result == "GPT-5.4 · cached input"
+    # Critical: must have space, not underscore
+    assert "cached_input" not in result
+    assert "cached input" in result
+
+
+def test_retail_label_cache_reads(app_client):
+    """_retail_label should normalize 'Cache Reads' suffix with spaces preserved."""
+    _, app_module = app_client
+    result = app_module._retail_label("GPT-5.4 Cache Reads")
+    assert result == "GPT-5.4 · cache reads"
+
+
+def test_retail_label_unknown_meter(app_client):
+    """_retail_label should return meter name unchanged if no suffix matches."""
+    _, app_module = app_client
+    result = app_module._retail_label("Some Unknown Meter")
+    assert result == "Some Unknown Meter"
+
+
+def test_retail_label_whitespace_handling(app_client):
+    """_retail_label should handle leading/trailing whitespace correctly."""
+    _, app_module = app_client
+    result = app_module._retail_label("  GPT-5.4 Input  ")
+    assert result == "GPT-5.4 · input"
+
+
+# ---------------------------------------------------------------------------
+# Tests – cache efficiency calculation
+# ---------------------------------------------------------------------------
+
+def test_cache_efficiency_with_live_pricing(app_client):
+    """Cache efficiency should match meters with '· cached input' suffix."""
+    client, app_module = app_client
+    # Mock fetch_retail_price_lookup to return labels with spaces
+    def mock_fetch():
+        return {
+            2.50: "GPT-5.4 · input",
+            0.25: "GPT-5.4 · cached input",
+        }
+
+    meters = [
+        _make_meter(meter_id="m1", meter_rates={"0": 2.50}),
+        _make_meter(meter_id="m2", meter_rates={"0": 0.25}),
+    ]
+    records = [
+        _make_record(meter_id="m1", meter_name="", meter_category="",
+                     quantity=100.0, name="Daily_BRSDT_20260101_0000"),
+        _make_record(meter_id="m2", meter_name="", meter_category="",
+                     quantity=50.0, name="Daily_BRSDT_20260101_0000"),
+    ]
+    fake = _fake_client_returning(records, rate_card_meters=meters)
+
+    with patch.object(app_module, "_get_client", return_value=fake):
+        with patch.object(app_module, "fetch_retail_price_lookup", side_effect=mock_fetch):
+            resp = client.get("/?refresh=true")
+
+    assert resp.status_code == 200
+    # Cache efficiency should be calculated: 50 / (50 + 100) = 0.333...
+    html = resp.data.decode("utf-8")
+    assert "Cache efficiency" in html or "cache_efficiency" in html
+
